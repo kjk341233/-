@@ -1,0 +1,369 @@
+
+#include <SoftwareSerial.h>            //소프트웨어로 시리얼통신 하기 위함.
+#include <Wire.h> //i2c
+#include <LiquidCrystal_I2C.h>   //LCD
+#include "DHT.h"                       // 온습도센서( DHT11 Sensor)
+
+
+void DisplayLCD(const char *buff1, const char *buff2); // LCD에 표시하는 함수.
+void DisplayLCDValue(int Num1, int Num2, int Num3);
+void LedSetting();            // LED 초기 셋팅
+
+int read_soil_humidity(); // 토양습도 센서에서 값을 읽어오는 함수
+int read_Humidity_Temperature(); // 온습도를 센서에서 읽어옴. (온도 및 습도값)
+int Chk_Button(); //  버턴을 체크하는 함수.  1: 자동버턴, 2: 수동버턴, 3: 그외
+
+#define DHTPIN1 13     // Digital pin connected to the DHT sensor
+#define DHTTYPE DHT11   // DHT 11
+
+  // 블루투스 통신
+#define blueRx 2   // 우노보드 Rx   (블루투스모듈 TX와 연결)
+#define blueTx 3   // 우노보드 Tx   (블루투스모듈 RX와 연결)
+
+   // LED   정상(B), 이상발생(R) 
+#define LED_G1 10    // 자동
+//#define LED_R1 5
+#define LED_G2 11    // 수동
+//#define LED_R2 7 
+
+   // Button   
+#define Button_Auto 8    // 자동
+#define Button_Manu 9    // 수동
+
+   // 모터펌프 및 팬에 전원공급하는 릴레이모듈
+#define Relay1 4   // 수중모터펌프 제어
+#define Relay2 5   // 팬 제어 (4개)
+#define Relay3 6
+#define Relay4 7
+
+    // iic 통신으로 LCD모듈 제어
+//#define SDA 18     // LCD display  아두이노 우노
+//#define SCL 19
+
+#define soil_sensorPin  A0 // 토양습도센서값 입력 포트 (아날로그 입력포트 A0 )
+
+LiquidCrystal_I2C lcd(0x27,16,2); 
+DHT dht1(DHTPIN1, DHTTYPE);  // 온습도 센서를 위한 함수
+SoftwareSerial BT_Ble(blueRx, blueTx);  // BLE
+
+unsigned long Now_Millis = 0; // 내부 클럭을 이용한 millis() 함수사용.
+unsigned long Start_Millis_Temp = 0;
+unsigned long Start_Millis_Pump = 0;
+
+int Pump_On_Off =0;   // 모터펌프의 현재상태를 확인함.   -1 : OFF 상태,   1: ON 상태
+
+float h1 = 0;  // 센서1의 습도 값
+float t1 = 0;  // 온도
+float f1 = 0;  //...
+int soil_h2 = 0;  // 토양습도 센서 값 ( 0~1023을  0~100 % 으로 표시함.)  (A3)
+
+int Mode_auto_manu = 1; // 2 : 수동제어,  1: 자동제어 ( 센서에 의한 움직임)
+
+void setup() 
+   {
+                
+      // LCD 초기화
+  lcd.init();
+  lcd.backlight();
+  DisplayLCD("Welcom to" , "my Smart Farm");  
+
+  LedSetting();  // LED 초기화 
+  
+   // Open serial communications and wait for port to open
+  Serial.begin(9600);
+    while (!Serial) { ; } // wait for serial port to connect. 
+
+  BT_Ble.begin(9600);     // 블루투스 모듈 초기화
+    while (!BT_Ble) { ;}
+                    
+   dht1.begin();  // 온습도센서 초기화
+ 
+   pinMode(Button_Auto, INPUT);    
+   pinMode(Button_Manu, INPUT);
+   pinMode(Relay1, OUTPUT);       // 수중모터펌프
+   pinMode(Relay2, OUTPUT);       // 팬
+   pinMode(Relay3, OUTPUT);       // 팬
+   digitalWrite(Relay1, HIGH);     // 수중모터펌프 , 릴레이는 HiGH 일때 OFF, LOW 일때 ON
+   digitalWrite(Relay2, HIGH);     // 팬
+   digitalWrite(Relay3, HIGH);       // 팬
+
+   digitalWrite(LED_G1, HIGH);    //  자동모드   
+   digitalWrite(LED_G2, LOW);    //  
+
+   delay(100); 
+     }
+
+void loop() { // run over and over
+
+   int Button_sw1 = 0; // 자동모드 버턴값을  확인.
+   int Button_sw2 = 0; // 수동모드 버턴값을  확인.
+
+//   char c = 0 ; // 블루투스로 받을 1byte
+
+         
+ // 1)모든센서들의 값 읽기
+     Now_Millis = millis();
+     
+     if(( ( Now_Millis - Start_Millis_Temp )> 3000) || (Start_Millis_Temp == 0)) // 3초마다 센서값을 읽는다.
+        {
+ 
+           read_soil_humidity(); // 토양습도 센서에서 값을 읽어오는 함수
+           read_Humidity_Temperature(); // 온습도를 센서에서 읽어옴
+
+           Start_Millis_Temp = Now_Millis;
+ 
+         // 모니터 화면에 표시
+//       Serial.print("온도 =");       Serial.println(t1);
+//       Serial.print("습도 =");       Serial.println(h1); 
+//       Serial.print("토양습도 =");    Serial.println(soil_h2);
+       
+        int t1_1 = 100 + int( t1); // 온도를 스마트폰 앱에 표시하기 위하여 2자리수 정수로 변형함.
+        int h1_1 = 200 + int( h1); // 습도를 스마트폰 앱에 표시하기 위하여 2자리수 정수로 변형함.
+        int soil_h2_2 = 300 + soil_h2; 
+        
+       DisplayLCDValue(t1_1, h1_1, soil_h2_2 );  // LCD에 습도, 온도, 토양습도 센서값 표시
+       
+       BT_Ble.print(t1_1); // 블루투스통신으로 스마트폰에 전송
+       BT_Ble.print(h1_1);
+       BT_Ble.print(soil_h2_2);
+       
+//        } // end if( ( Now_Millis - Start_Millis_Temp )> 3000) // 3초마다 센서값을 읽는다.
+
+//       Serial.println("Mode_auto_manu = ");     Serial.println(Mode_auto_manu);     
+
+   // 자동 모드에서 동작 ( 센서값에 의한 모터펌프와 팬이 구동됨.)
+     if ( Mode_auto_manu ==1 )
+        {
+//             digitalWrite(LED_G1, HIGH);    //  자동모드   
+//             digitalWrite(LED_G2, LOW);    //  
+            
+            if( soil_h2 < 10) 
+                 { 
+                  motor_Pump(1);
+                  Pump_On_Off = 1; // 모터펌프의 상태 : ON 상태로 
+                  Start_Millis_Pump = millis();  // 펌프가 시작하는 시간을 읽음. (1초동작을 위해)
+                  }
+            else { motor_Pump(-1);
+                   Pump_On_Off = -1; // 모터펌프의 상태 : OFF 상태로
+                 }
+
+            digitalWrite(LED_G1, HIGH);    //  자동모드   
+            digitalWrite(LED_G2, LOW);    //  
+
+            if( h1 > 50) { motor_Pan(1); }
+            else { motor_Pan(-1); }
+         
+           
+         } // end  if ( Mode_auto_manual ==1 )
+
+    } // end if( ( Now_Millis - Start_Millis_Temp )> 3000) // 3초마다 센서값을 읽는다.
+  
+ // 2)블루투스에서 제어신호가 들어왔는지 확인.
+ //    수동모드에서 스마트폰 앱으로 제어 함. ( 모터펌프 및 팬 구동 제어)
+   if (BT_Ble.available())// Bluetooth 통신으로 스마트폰에서 입력이 있는지 check
+       { 
+          char c = BT_Ble.read();
+          Serial.println(c); // 모니터로 출력
+
+        if ( Mode_auto_manu ==2 ) 
+          { 
+//             digitalWrite(LED_G2, HIGH);    //  자동모드   
+//             digitalWrite(LED_G1, LOW);    //  
+
+ 
+           switch (c)
+               {
+                  case 'a' :  // 모터펌프 작동 ON
+                              Serial.println("모터펌프 ON");
+                              motor_Pump(1); //  모터펌프 ON
+                              Pump_On_Off = 1; // 모터펌프의 상태 : ON 상태로
+                              
+                              break;
+                  case 'b' :  // 모터펌프 정지 OFF
+                              Serial.println("모터펌프 정지 OFF"); 
+                              motor_Pump(-1); //  모터펌프 OFF
+                              Pump_On_Off = -1; // 모터펌프의 상태 : OFF 상태로
+                              
+                              break;
+                  case 'c' :  // 팬 작동 ON
+                              Serial.println("팬 작동 ON");
+                            motor_Pan(1); //  팬 작동 ON
+                              
+                              break;
+                  case 'd' :  // 팬 정지 OFF
+                              Serial.println("팬 정지 OFF"); 
+                            motor_Pan(-1); //  팬 OFF
+                              
+                              break;
+                  
+                   
+                }  // end switch(c)
+           }  // end else if ( Mode_auto_manu ==2 ) // 수동모드 완료.
+           
+       } // end  if (Serial3.available())
+
+      
+     // 2) 버턴 읽기 ( Button1 : 자동, Button2: 수동)
+           Button_sw1 = digitalRead(Button_Auto);
+           Button_sw2 = digitalRead(Button_Manu);
+        //Serial.println("Button_sw1");     Serial.println(Button_sw1);
+        //Serial.println("Button_sw2");     Serial.println(Button_sw2);
+        
+           if ( Button_sw1== 1 ) // Auto Mode
+              {
+                 Mode_auto_manu =1;
+                 
+                digitalWrite(LED_G1, HIGH);    //  자동모드   
+                digitalWrite(LED_G2, LOW);    //  
+                 
+               //  Serial.println(" 자동 모드 ");
+                             
+              }   
+                  
+            else if( Button_sw2== 1 ) // Manu Mode
+              {
+                Mode_auto_manu =2;               
+
+                digitalWrite(LED_G1, LOW);    //  자동모드   
+                digitalWrite(LED_G2, HIGH);    //  
+                motor_Pump(-1); //  모터펌프 OFF
+                motor_Pan(-1); //  팬 OFF
+           
+           //     Serial.println(" 수동 모드 ");        
+                
+              }
+ 
+     } // end Loop()
+
+
+
+// 강수량 센서에서 값을 읽어오는 함수
+int read_soil_humidity() 
+ {
+  int rain_sensorValue = 0;
+  rain_sensorValue = analogRead(soil_sensorPin);
+  soil_h2 = map(rain_sensorValue, 0, 1023, 100, 0); //0~1023을  0~100%로 변환 
+ 
+  return 1;
+ }
+
+// 온습도 센서에서 값을 읽어오는 함수
+int read_Humidity_Temperature() 
+     {
+       h1 = dht1.readHumidity();
+
+    // Read temperature as Celsius (the default)
+       t1 = dht1.readTemperature();
+
+    // Read temperature as Fahrenheit (isFahrenheit = true)
+       f1 = dht1.readTemperature(true);
+
+
+  // Check if any reads failed and exit early (to try again).
+      if (isnan(h1) || isnan(t1) || isnan(f1)) {
+
+      return -1;
+      }
+      //      Serial.print("Temperature: ");
+//      Serial.print(" 온습도 센서 ");
+//     Serial.print(t1);
+//      Serial.print(F("°C    ")); 
+
+//      Serial.print(F("Humidity: "));
+//      Serial.println(h1);
+      
+      return 1;
+     }
+
+
+// 수중모터펌프를 릴레이를 통해서 전원으로 제어한다. (1: 동작,   -1: 정지)
+void motor_Pump(int on_off)
+{
+ 
+ 
+      if ( on_off == -1)
+        {
+           digitalWrite(Relay1, HIGH); // 전원차단 DC 5V +
+        }
+     else if ( on_off == 1) 
+       {
+          digitalWrite(Relay1, LOW); // 전원선 연결 DC 5V +
+       } 
+     else 
+      { digitalWrite(Relay1, HIGH);} // 전원차단 DC 5V + }
+  
+}
+
+// 습도조절을 위한 팬을 릴레이를 통해서 전원으로 제어한다. (1: 동작,   -1: 정지)
+void motor_Pan(int on_off)  
+{
+     if ( on_off == -1)
+        {
+           digitalWrite(Relay2, HIGH); // 전원차단 DC 12V +
+           digitalWrite(Relay3, HIGH);
+        }
+     else if ( on_off == 1) 
+       {
+          digitalWrite(Relay2, LOW); // 전원선 연결 DC 12V +
+          digitalWrite(Relay3, LOW);
+       } 
+    else 
+      { 
+        digitalWrite(Relay2, HIGH); // 전원차단 DC 12V + 
+        digitalWrite(Relay3, HIGH);
+      }
+}
+
+
+// LCD에 Display 하는 함수 ( 16x2 )
+void DisplayLCD(const char *buff1, const char *buff2)
+   {
+     lcd.init();
+//     lcd.backlight();
+     lcd.setCursor(0, 0); 
+     lcd.print(buff1);
+     lcd.setCursor(0, 1); 
+     lcd.print(buff2);
+   }
+// LCD에 Display 하는 함수 ( 16x2 )
+
+
+// 온도 습도를 LCD에 표시
+void DisplayLCDValue(int Num1, int Num2, int Num3)  //
+   {
+       lcd.init();
+       lcd.setCursor(0, 0); 
+       lcd.print("H:   ");
+       lcd.print(Num2 -200);        // 스마트팜 습도
+       lcd.print("%");
+       
+       lcd.setCursor(10, 0); 
+       lcd.print("T: ");
+       lcd.print(Num1 - 100);       // 스마트팜 온도
+       lcd.print("C");
+
+       lcd.setCursor(0, 1); 
+       lcd.print("S_H: "); 
+       lcd.print(Num3 -300);       // 토양 습도 
+       lcd.print("%");
+
+      
+   }
+
+void LedSetting()
+   {
+//      pinMode(LED_B1, OUTPUT);
+      pinMode(LED_G1, OUTPUT);
+//      pinMode(LED_R1, OUTPUT);
+//      pinMode(LED_B2, OUTPUT);
+      pinMode(LED_G2, OUTPUT);
+//      pinMode(LED_R2, OUTPUT);
+
+//      digitalWrite(LED_B1, LOW);
+      digitalWrite(LED_G1, LOW);
+//      digitalWrite(LED_R1, LOW);
+//      digitalWrite(LED_B2, LOW);
+      digitalWrite(LED_G2, LOW);
+//      digitalWrite(LED_R2, LOW);
+     
+   }
